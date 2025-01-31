@@ -45,7 +45,7 @@ def fetch_data_from_api():
 
 
 @asset
-def breweries_api() -> Output:
+def breweries_api(context) -> Output:
     spark = (
         SparkSession.builder.appName("ExtractBreweries")
         .master("spark://spark:7077")
@@ -84,7 +84,7 @@ columns_to_normalize = ["city", "state_province", "country"]
 
 
 @asset(deps=["breweries_api"])
-def breweries_partioned_parquet() -> Output:
+def breweries_partioned_by_location_parquet() -> Output:
     spark = (
         SparkSession.builder.appName("BreweriesPartionedParquet")
         .master("spark://spark:7077")
@@ -130,78 +130,33 @@ def breweries_partioned_parquet() -> Output:
     return Output(
         value="Breweries API partitioned successfully",
         metadata={
-            "timestamp": current_timestamp_value,
+            "timestamp": str(current_timestamp_value),
             "location": "blake/silver/breweries",
         },
     )
 
 
-@asset(deps=["breweries_partioned_parquet"])
-def breweries_table() -> Output:
-    """
-    The raw breweries API result, loaded into a DuckDB database
-    """
+@asset(deps=["breweries_partioned_by_location_parquet"])
+def breweries_by_type_location() -> None:
     query = """
-    INSTALL httpfs;
-    LOAD httpfs;
-    SET s3_endpoint='minio:9000';
-    SET s3_access_key_id='minioadmin';
-    SET s3_secret_access_key='minioadmin';
-    SET s3_use_ssl=false;
-    SET s3_url_style='path';
-    create or replace table breweries as (
-       select
-           id as id,
-           name as name,
-           brewery_type as type,
-           city as city,
-           state_province as state_province,
-           country as country,
-           latitude as latitude,
-           website_url as url,
-           state as state
+        INSTALL httpfs;
+        LOAD httpfs;
+        SET s3_endpoint='minio:9000';
+        SET s3_access_key_id='minioadmin';
+        SET s3_secret_access_key='minioadmin';
+        SET s3_use_ssl=false;
+        SET s3_url_style='path';
+        create or replace table breweries_by_country as ( 
+        select count(distinct(brewery_type))
         from read_parquet(
             's3a://blake/silver/breweries/**/*.parquet',
             hive_partitioning=1
         )
-   );
-   """
-    conn = backoff(
-        fn=duckdb.connect,
-        retry_on=(RuntimeError, duckdb.IOException),
-        kwargs={
-            "database": "data/staging/data.duckdb",
-        },
-        max_retries=10,
-    )
-    with conn:
-        # Execute table creation
-        conn.execute(query)
-
-        # Verify table existence and get metrics
-        result = conn.sql("SELECT COUNT(*) AS row_count FROM breweries").fetchall()
-        table_info = conn.sql("PRAGMA table_info('breweries')").fetchall()
-
-    return Output(
-        value=result[0][0],  # Return row count as primary value
-        metadata={
-            "database": "data/staging/data.duckdb",
-            "table_name": "breweries",
-            "row_count": result[0][0],
-            "columns": [col[1] for col in table_info],  # Extract column names
-            "s3_source": "s3a://blake/silver/breweries/**/*.parquet",
-            "hive_partitioning": True,
-        },
-    )
-
-
-@asset(deps=["breweries_table"])
-def breweries_by_type_location() -> None:
-    query = """
-        select count(distinct(type))
-        from breweries
-        group by country
+        group by country);
+        copy breweries_by_country to 's3a://blake/gold/breweries/by_location.json' (format json, overwrite_or_ignore true);
         """
+    print("QUERY")
+    print(query)
     conn = backoff(
         fn=duckdb.connect,
         retry_on=(RuntimeError, duckdb.IOException),

@@ -80,3 +80,18 @@ services:
       - SPARK_USER=spark
     networks:
       - spark
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: ./containers/jupyter/Dockerfile
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    environment:
+      - JUPYTER_TOKEN=secret
+    depends_on:
+      - minio
+    networks:
+      - spark
