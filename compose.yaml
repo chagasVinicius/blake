@@ -1,6 +1,7 @@
 volumes:
   minio-data:
   dagster_home:
+  data:
 
 networks:
   spark:
@@ -33,6 +34,7 @@ services:
       - "3000:3000"
     volumes:
       - dagster_home:/dagster_home
+      - data:/opt/dagster/app
     environment:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
