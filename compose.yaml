@@ -1,6 +1,7 @@
 volumes:
   minio-data:
   dagster_home:
+  data:
 
 networks:
   spark:
@@ -33,6 +34,7 @@ services:
       - "3000:3000"
     volumes:
       - dagster_home:/dagster_home
+      - data:/opt/dagster/app
     environment:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
@@ -76,5 +78,20 @@ services:
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
       - SPARK_USER=spark
+    networks:
+      - spark
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: ./containers/jupyter/Dockerfile
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    environment:
+      - JUPYTER_TOKEN=secret
+    depends_on:
+      - minio
     networks:
       - spark

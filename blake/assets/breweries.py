@@ -4,6 +4,9 @@ import requests
 from dagster import asset, Output
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql import functions as F
+from dagster._utils.backoff import backoff
+import duckdb
 
 json_schema = StructType(
     [
@@ -42,7 +45,7 @@ def fetch_data_from_api():
 
 
 @asset
-def breweries_api() -> Output:
+def breweries_api(context) -> Output:
     spark = (
         SparkSession.builder.appName("ExtractBreweries")
         .master("spark://spark:7077")
@@ -63,7 +66,7 @@ def breweries_api() -> Output:
     data_df = spark.createDataFrame(data, schema=json_schema)
 
     # Write with partitioning by state
-    output_path = "s3a://blake/raw-layer/breweries/"
+    output_path = "s3a://blake/raw/breweries/api/"
     data_df.write.mode("overwrite").json(output_path)
 
     return Output(
@@ -75,3 +78,93 @@ def breweries_api() -> Output:
             "partition_by": "state",
         },
     )
+
+
+columns_to_normalize = ["city", "state_province", "country"]
+
+
+@asset(deps=["breweries_api"])
+def breweries_partioned_by_location_parquet() -> Output:
+    spark = (
+        SparkSession.builder.appName("BreweriesPartionedParquet")
+        .master("spark://spark:7077")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .getOrCreate()
+    )
+
+    # Read raw JSON data from S3
+    raw_df = spark.read.json("s3a://blake/raw/breweries/api/")
+    unidecoded_df = raw_df.select(
+        [
+            F.when(
+                F.col(c).isNotNull(),
+                F.regexp_replace(
+                    F.regexp_replace(
+                        F.lower(F.trim(F.col(c))),
+                        r"\p{M}",  # Remove diacritics using Unicode property
+                        "",
+                    ),
+                    r"\s+",  # Replace whitespace sequences
+                    "_",
+                ),
+            )
+            .otherwise(F.col(c))
+            .alias(c)
+            if c in columns_to_normalize
+            else F.col(c)
+            for c in raw_df.columns
+        ]
+    )
+
+    # Add transformation current_timestamp
+    timestamp = F.current_timestamp()
+    transformed_df = unidecoded_df.withColumn("transformed_at", timestamp)
+
+    # Write as Parquet partitioned by specified columns
+    transformed_df.write.mode("overwrite").partitionBy(
+        "country", "state_province", "city"
+    ).parquet("s3a://blake/silver/breweries/")
+    current_timestamp_value = transformed_df.select("current_timestamp").collect()[0][0]
+    return Output(
+        value="Breweries API partitioned successfully",
+        metadata={
+            "timestamp": str(current_timestamp_value),
+            "location": "blake/silver/breweries",
+        },
+    )
+
+
+@asset(deps=["breweries_partioned_by_location_parquet"])
+def breweries_by_type_location() -> None:
+    query = """
+        INSTALL httpfs;
+        LOAD httpfs;
+        SET s3_endpoint='minio:9000';
+        SET s3_access_key_id='minioadmin';
+        SET s3_secret_access_key='minioadmin';
+        SET s3_use_ssl=false;
+        SET s3_url_style='path';
+        create or replace table breweries_by_country as ( 
+        select count(distinct(brewery_type))
+        from read_parquet(
+            's3a://blake/silver/breweries/**/*.parquet',
+            hive_partitioning=1
+        )
+        group by country);
+        copy breweries_by_country to 's3a://blake/gold/breweries/by_location.json' (format json, overwrite_or_ignore true);
+        """
+    print("QUERY")
+    print(query)
+    conn = backoff(
+        fn=duckdb.connect,
+        retry_on=(RuntimeError, duckdb.IOException),
+        kwargs={
+            "database": "data/staging/data.duckdb",
+        },
+        max_retries=10,
+    )
+    result = conn.execute(query).fetch_df()
+    print("RESULT")
+    print(result)

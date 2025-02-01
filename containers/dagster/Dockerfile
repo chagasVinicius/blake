@@ -17,7 +17,7 @@ RUN curl -fSL "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/
   -o /opt/bitnami/spark/jars/aws-java-sdk-bundle-1.12.780.jar
 
 # install Python dependencies
-RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system dagster dagster-webserver dagster-aws pyspark
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system dagster dagster-webserver dagster-aws pyspark dagster-duckdb numpy pandas
 USER root
 RUN apt-get update && \
   apt-get install -y --no-install-recommends \
@@ -29,5 +29,4 @@ COPY . /opt/dagster/app/
 
 EXPOSE 3000
 CMD ["dagster", "dev", "-m", "blake", "--host", "0.0.0.0", "--port", "3000"]
-#CMD ["dagster", "dev", "--host", "0.0.0.0", "--port", "3000"]
 
