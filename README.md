@@ -15,11 +15,11 @@ However, raw API data requires transformation to become actionable for business 
 !["Project Diagram"](/images/blake-arch.png)
 The Blake Project provides information from the "Open Brewery DB API" across three distinct data layers, each representing a stage of transformation.
 
-##### Raw (Bronze) Layer
+#### Raw (Bronze) Layer
 
 This layer stores data in its most "natural" state, mirroring the API's original format without transformations. To achieve this, the project retains the data in JSON format, preserving the API’s exact response structure. All data across layers is stored in the Minio storage service, ensuring controlled access by authorized services or analysts with proper permissions.
 
-##### Silver Layer
+#### Silver Layer
 
 Here, the data undergoes light transformations to enhance usability. Key steps include:
 
@@ -33,7 +33,7 @@ Here, the data undergoes light transformations to enhance usability. Key steps i
 
 These steps ensure partition consistency and reduce the need for analysts to cross-reference raw data for naming discrepancies.
 
-##### Gold Layer
+#### Gold Layer
 
 This layer delivers curated, insight-ready data. Analysts can explore silver-layer data directly, leveraging pre-processed transformations to generate actionable insights without redundant work. For example, the project aggregates breweries by type per city, enabling immediate analysis. Additionally, users can explore further insights via the integrated Jupyter service, which provides access to both silver and raw layers.
 
@@ -43,13 +43,13 @@ By structuring data into these layers, the Blake Project streamlines analysis wh
 
 The project architecture was designed to achieve the goals described above with consistency and reliability. The layers must be generated in a specific order and updated periodically. To accomplish this, the project leverages the Dagster orchestration platform.
 
-##### Dagster Orchestration
+#### Dagster Orchestration
 
-Dagster uses the concept of assets—objects that represent persistent data in storage. Each asset is a code-based definition of how its corresponding data is generated. This declarative approach simplifies orchestration, enabling data engineers to trace transformations and logic without unnecessary complexity.
+[Dagster](https://dagster.io/) uses the concept of assets—objects that represent persistent data in storage. Each asset is a code-based definition of how its corresponding data is generated. This declarative approach simplifies orchestration, enabling data engineers to trace transformations and logic without unnecessary complexity.
 
-##### Spark Processing
+#### Spark Processing
 
-The Blake Project primarily relies on Apache Spark for computation. Spark’s distributed processing capabilities allow the project to:
+The Blake Project primarily relies on [Apache Spark](https://spark.apache.org/) for computation. Spark’s distributed processing capabilities allow the project to:
 
 * Handle large datasets sourced from the API.
 
@@ -57,17 +57,17 @@ The Blake Project primarily relies on Apache Spark for computation. Spark’s di
 
 * Scale resources dynamically by increasing worker nodes as needed.
 
-##### Minio Storage
+#### Minio Storage
 
-All data is persisted in the Minio storage service, which mimics cloud storage semantics. This design ensures flexibility, enabling seamless migration to other cloud providers (e.g., AWS S3, Google Cloud Storage) if required.
+All data is persisted in the [Minio](https://min.io/) storage service, which mimics cloud storage semantics. This design ensures flexibility, enabling seamless migration to other cloud providers (e.g., AWS S3, Google Cloud Storage) if required.
 
-##### Jupyter Analytics
+#### Jupyter Analytics
 
-Analytics can be performed directly within the integrated Jupyter service, which provides interactive access to data across all layers.
+Analytics can be performed directly within the integrated [Jupyter](https://jupyter.org/) service, which provides interactive access to data across all layers.
 
-##### Docker Deployment
+#### Docker Deployment
 
-To ensure the project is as production-ready as possible, core services (Spark, Minio, Jupyter, etc.) are containerized using Docker. This allows the entire architecture to be replicated effortlessly across any cloud provider or on-premise environment.
+To ensure the project is as production-ready as possible, core services (Spark, Minio, Jupyter, etc.) are containerized using [Docker](https://www.docker.com/). This allows the entire architecture to be replicated effortlessly across any cloud provider or on-premise environment.
 
 #### Blake pipelines [WIP]
 
