@@ -5,6 +5,8 @@ volumes:
 
 networks:
   spark:
+    external: true
+    name: dagster_blake_network
 
 services:
   minio:
@@ -18,31 +20,6 @@ services:
       MINIO_DEFAULT_BUCKETS: "blake:public"
     volumes:
       - minio-data:/data
-    networks:
-      - spark
-
-  dagster-dev:
-    develop:
-      watch:
-        - action: sync
-          path: .
-          target: /blake
-    build:
-      context: .
-      dockerfile: ./containers/dagster/Dockerfile
-    ports:
-      - "3000:3000"
-    volumes:
-      - dagster_home:/dagster_home
-      - data:/opt/dagster/app
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_ENDPOINT_URL: http://minio:9000
-      DAGSTER_PIPES_BUCKET: blake
-
-    depends_on:
-      - minio
     networks:
       - spark
 
