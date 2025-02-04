@@ -1,5 +1,6 @@
 volumes:
   minio-data:
+  metabase-data:
   dagster_home:
   data:
 
@@ -20,6 +21,19 @@ services:
       MINIO_DEFAULT_BUCKETS: "blake:public"
     volumes:
       - minio-data:/data
+    networks:
+      - spark
+
+  metabase:
+    build:
+      context: .
+      dockerfile: ./containers/metabase/Dockerfile
+    ports:
+      - "3030:3000"
+    environment:
+      - MB_PLUGINS_DIR=/home/plugins
+    depends_on:
+      - minio
     networks:
       - spark
 
