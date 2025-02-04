@@ -1,13 +1,21 @@
-from typing import Dict, Any
 import requests
 
-from dagster import AssetExecutionContext, asset, Output
-from pyspark.sql import SparkSession
+from dagster import AssetExecutionContext, asset, Output, EnvVar
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from pyspark.sql import functions as F
 from dagster._utils.backoff import backoff
 import duckdb
 from datetime import datetime
+import os
+
+BREWERIES_URL = os.getenv("BREWERIES_URL")
+DAGSTER_PIPES_BUCKET = os.getenv("DAGSTER_PIPES_BUCKET")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL")
+DUCKDB_DATABASE = os.getenv("DUCKDB_DATABASE")
+MINIO_HOST = os.getenv("MINIO_HOST")
+MINIO_PORT = os.getenv("MINIO_PORT")
 
 json_schema = StructType(
     [
@@ -40,9 +48,7 @@ def HelloWorld() -> None:
 def breweries_metadata(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
     try:
-        response = requests.get(
-            "https://api.openbrewerydb.org/v1/breweries/meta", timeout=10
-        )
+        response = requests.get(f"{BREWERIES_URL}/breweries/meta", timeout=10)
         response.raise_for_status()
         data = response.json()
 
@@ -68,7 +74,7 @@ def breweries_metadata(context: AssetExecutionContext) -> Output:
         ),
     )
 
-    output_path = "s3a://blake/raw/breweries/metadata/"
+    output_path = f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/metadata/"
     data_df.write.mode("overwrite").json(output_path)
 
     return Output(
@@ -84,7 +90,7 @@ def breweries_metadata(context: AssetExecutionContext) -> Output:
 
 def fetch_page_from_api(page: int, per_page: int):
     try:
-        url = "https://api.openbrewerydb.org/v1/breweries"
+        url = f"{BREWERIES_URL}/breweries"
         params = {"page": page, "per_page": per_page}
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()  # Raise exception for 4xx/5xx
@@ -101,7 +107,9 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
 
     # Read pagination metadata
-    metadata_df = spark.read.json("s3a://blake/raw/breweries/metadata/")
+    metadata_df = spark.read.json(
+        f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/metadata/"
+    )
     metadata_row = metadata_df.first()
     total_records = int(metadata_row["total"])
     per_page = int(metadata_row["per_page"])
@@ -121,7 +129,7 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     data_df = spark.createDataFrame(all_data, schema=json_schema)
 
     # Write with partitioning by state
-    output_path = "s3a://blake/raw/breweries/api/"
+    output_path = f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/api/"
     data_df.write.mode("overwrite").json(output_path)
 
     return Output(
@@ -144,7 +152,7 @@ columns_to_normalize = ["city", "state_province", "country"]
 def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
 
-    raw_df = spark.read.json("s3a://blake/raw/breweries/api/")
+    raw_df = spark.read.json(f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/api/")
     unidecoded_df = raw_df.select(
         [
             F.when(
@@ -174,20 +182,19 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
     # Write as Parquet partitioned by specified columns
     transformed_df.write.mode("overwrite").partitionBy(
         "country", "state_province", "city"
-    ).parquet("s3a://blake/silver/breweries/")
+    ).parquet(f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/")
     current_timestamp_value = transformed_df.select("current_timestamp").collect()[0][0]
     return Output(
         value="Breweries API partitioned successfully",
         metadata={
             "timestamp": str(current_timestamp_value),
-            "location": "blake/silver/breweries",
         },
     )
 
 
 @asset
 def breweries_api_health(context: AssetExecutionContext) -> Output:
-    api_url = "https://api.openbrewerydb.org/breweries"
+    api_url = f"{BREWERIES_URL}/breweries"
 
     try:
         response = requests.get(api_url, timeout=10)
@@ -204,33 +211,32 @@ def breweries_api_health(context: AssetExecutionContext) -> Output:
 
 @asset(deps=["breweries_partioned_by_location_parquet"])
 def breweries_by_type_location() -> None:
-    query = """
+    query = f"""
         INSTALL httpfs;
         LOAD httpfs;
-        SET s3_endpoint='minio:9000';
-        SET s3_access_key_id='minioadmin';
-        SET s3_secret_access_key='minioadmin';
+        SET s3_endpoint='{MINIO_HOST}:{MINIO_PORT}';
+        SET s3_access_key_id='{AWS_ACCESS_KEY_ID}';
+        SET s3_secret_access_key='{AWS_SECRET_ACCESS_KEY}';
         SET s3_use_ssl=false;
         SET s3_url_style='path';
         create or replace table breweries_by_country as ( 
         select country, count(distinct(brewery_type)) as unique_types
         from read_parquet(
-            's3a://blake/silver/breweries/**/*.parquet',
+            's3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/**/*.parquet',
             hive_partitioning=1
         )
         group by country);
-        copy breweries_by_country to 's3a://blake/gold/breweries/by_location.json' (format json, overwrite_or_ignore true);
+        copy breweries_by_country to 's3a://{DAGSTER_PIPES_BUCKET}/gold/breweries/by_location.json' (format json, overwrite_or_ignore true);
         """
-    print("QUERY")
-    print(query)
     conn = backoff(
         fn=duckdb.connect,
         retry_on=(RuntimeError, duckdb.IOException),
         kwargs={
-            "database": "data/staging/data.duckdb",
+            "database": DUCKDB_DATABASE,
         },
         max_retries=10,
     )
+    print(query, "<<<<<<<<QUERY>>>>>>>>>>>")
     result = conn.execute(query).fetch_df()
     print("RESULT")
     print(result)
