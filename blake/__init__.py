@@ -1,9 +1,7 @@
 import dagster as dg
-from dagster._core.definitions import RunRequest
 import requests
 from .assets import breweries
 from .resources.breweries import PySparkResource
-from datetime import datetime
 
 breweries_assets = dg.load_assets_from_modules([breweries])
 
@@ -34,7 +32,7 @@ breweries_api_health_schedule = dg.ScheduleDefinition(
     asset_key=dg.AssetKey("breweries_partioned_by_location_parquet"),
     job_name="breweries_golden_job",
 )
-def check_breweries_job():
+def check_breweries_silver():
     return dg.RunRequest()
 
 
@@ -52,7 +50,17 @@ def run_breweries_sensor(context: dg.SensorEvaluationContext):
     monitored_jobs=[breweries_api_health_job],
 )
 def check_breweries_health(context: dg.SensorEvaluationContext):
-    response = requests.get("https://api.openbrewerydb.org/v1/breweries/random")
+    response = requests.get(f"{breweries.BREWERIES_URL}/breweries/random")
+    context.log.info("FAILURE ACTION")
+    context.log.warning(f"{response.json()}")
+
+
+@dg.run_status_sensor(
+    run_status=dg.DagsterRunStatus.FAILURE,
+    monitored_jobs=[breweries_job],
+)
+def check_breweries_job(context: dg.SensorEvaluationContext):
+    response = requests.get(f"{breweries.BREWERIES_URL}/breweries/random")
     context.log.info("FAILURE ACTION")
     context.log.warning(f"{response.json()}")
 
@@ -60,7 +68,12 @@ def check_breweries_health(context: dg.SensorEvaluationContext):
 defs = dg.Definitions(
     assets=breweries_assets,
     jobs=[breweries_job, breweries_golden_job, breweries_api_health_job],
-    sensors=[check_breweries_job, check_breweries_health, run_breweries_sensor],
+    sensors=[
+        check_breweries_job,
+        check_breweries_health,
+        run_breweries_sensor,
+        check_breweries_silver,
+    ],
     resources={"spark": PySparkResource()},
     schedules=[breweries_api_health_schedule],
 )

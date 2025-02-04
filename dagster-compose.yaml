@@ -1,7 +1,4 @@
 services:
-  # This service runs the postgres DB used by dagster for run storage, schedule storage,
-  # and event log storage. Depending on the hardware you run this Compose on, you may be able
-  # to reduce the interval and timeout in the healthcheck to speed up your `docker-compose up` times.
   dagster_blake_postgresql:
     image: postgres:11
     container_name: dagster_blake_postgresql
@@ -17,12 +14,6 @@ services:
       timeout: 8s
       retries: 5
 
-  # This service runs the gRPC server that loads your user code, in both dagster-webserver
-  # and dagster-daemon. By setting DAGSTER_CURRENT_IMAGE to its own image, we tell the
-  # run launcher to use this same image when launching runs in a new container as well.
-  # Multiple containers like this can be deployed separately - each just needs to run on
-  # its own port, and have its own entry in the workspace.yaml file that's loaded by the
-  # webserver.
   dagster_blake_user_code:
     build:
       context: .
@@ -38,9 +29,6 @@ services:
     networks:
       - dagster_blake_network
 
-  # This service runs dagster-webserver, which loads your user code from the user code container.
-  # Since our instance uses the QueuedRunCoordinator, any runs submitted from the webserver will be put on
-  # a queue and later dequeued and launched by dagster-daemon.
   dagster_blake_webserver:
     build:
       context: containers/dagster/
@@ -73,8 +61,6 @@ services:
       dagster_blake_user_code:
         condition: service_started
 
-  # This service runs the dagster-daemon process, which is responsible for taking runs
-  # off of the queue and launching them, as well as creating runs from schedules or sensors.
   dagster_blake_daemon:
     build:
       context: containers/dagster/
@@ -91,8 +77,13 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_ENDPOINT_URL: http://minio:9000
+      MINIO_HOST: minio
+      MINIO_PORT: 9000
       DAGSTER_PIPES_BUCKET: blake
-    volumes: # Make docker client accessible so we can launch containers using host docker
+      BREWERIES_URL: https://api.openbrewerydb.org/v1
+      DUCKDB_DATABASE: data/staging/data.duckdb
+      SPARK_URL: spark://spark:7077
+    volumes: # Make docker client accessible so we can launch:working_dir: dir containers using host docker
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/io_manager_storage:/tmp/io_manager_storage
     networks:

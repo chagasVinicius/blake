@@ -24,6 +24,11 @@ run_launcher:
       - AWS_SECRET_ACCESS_KEY
       - AWS_ENDPOINT_URL
       - DAGSTER_PIPES_BUCKET
+      - SPARK_URL
+      - BREWERIES_URL
+      - DUCKDB_DATABASE
+      - MINIO_HOST
+      - MINIO_PORT
 
     network: dagster_blake_network
     container_kwargs:
