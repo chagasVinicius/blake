@@ -12,12 +12,11 @@ However, raw API data requires transformation to become actionable for business 
 
 ### Blake project
 
-!["Project Diagram"](/images/blake-arch.png)
 The Blake Project provides information from the "Open Brewery DB API" across three distinct data layers, each representing a stage of transformation.
 
 #### Raw (Bronze) Layer
 
-This layer stores data in its most "natural" state, mirroring the API's original format without transformations. To achieve this, the project retains the data in JSON format, preserving the API’s exact response structure. All data across layers is stored in the Minio storage service, ensuring controlled access by authorized services or analysts with proper permissions.
+This layer stores data in its most "natural" state, mirroring the API's original format without transformations. To achieve this, the project retains the data in JSON format, preserving the API’s exact response structure. All data across layers is stored in the storage service, ensuring controlled access by authorized services or analysts with proper permissions.
 
 #### Silver Layer
 
@@ -40,6 +39,8 @@ This layer delivers curated, insight-ready data. Analysts can explore silver-lay
 By structuring data into these layers, the Blake Project streamlines analysis while maintaining traceability from raw sources to refined outputs.
 
 #### Blake design
+
+!["Project Diagram"](/images/blake-arch.png)
 
 The project architecture was designed to achieve the goals described above with consistency and reliability. The layers must be generated in a specific order and updated periodically. To accomplish this, the project leverages the Dagster orchestration platform.
 
@@ -85,6 +86,21 @@ The `breweries_api` and `breweries_partitioned_by_location_parquet` assets repre
 
 Finally, we have the `breweries_by_type_location` asset, which materializes an aggregation of the silver layer data. As such, it is upstream of the `breweries_partitioned_by_location_parquet` asset, meaning its materialization begins only after the previous asset has been materialized. To ensure this, we have created a sensor to check the success of the raw-to-silver pipeline, which triggers the materialization of the golden layer.
 
+#### Handling Errors
+
+* In/Out
+
+  In the current version, we check if the API contract contains the expected keys based on our previous analyses. This check ensures that the expected keys are still present but does not trigger an alert if new keys are added. A failure is emitted only if the API contract is missing keys. This approach was chosen to guarantee that the pipeline will not behave abnormally in the event of missing keys.
+
+#### Evolutions
+
+The project can evolve into a more robust design with the addition of several features.
+
+* Add granular permissions to data storage. Ideally, the data storage should have different access permissions for different groups to guarantee data preservation. For example, the analytics teams should only have read access to the silver layer and should not access the raw layer.
+* Improve ingestion using specialized tools such as [DLT](https://dlthub.com/blog/dlt-dagster). The idea is to add a tool focused on the ingestion process, delegating the responsibility of checking contracts and automatically handling changes.
+* Improve model schema definitions and evolutions using [DBT](https://docs.dagster.io/integrations/libraries/dbt) to better handle schema changes, additions and evolutions of data models in the gold layer.
+* Logging and monitoring using tools like [Metaplane](https://www.metaplane.dev/) or [ATLAN](https://atlan.com/) to simplify access to data quality insights, logging and monitoring downstream code changes impact.
+
 #### RUN
 
 In order to run the project, make sure that you have docker, docker compose and make installed.
@@ -104,16 +120,3 @@ The project contains two ways to make analytic analyses.
 In <http://localhost:8888>, you w:will find a jupyter notebook application, with a example notebook with how it is possible to access the storage using DuckDB.
 
 It is also possible to use DuckDB in the Metabase application (<http://localhost:3030>) and using the DuckDB plugin installed, it is possible to run queries and create visualizations in the same way as the notebook example.
-
-#### Handling Errors
-
-* In/OutIn
-  In the current version, we check if the API contract contains the expected keys based on our previous analyses. This check ensures that the expected keys are still present but does not trigger an alert if new keys are added. A failure is emitted only if the API contract is missing keys. This approach was chosen to guarantee that the pipeline will not behave abnormally in the event of missing keys.
-
-#### Evolutions
-
-The project can evolve into a more robust design with the addition of several features.
-
-* Improve ingestion using specialized tools such as [DLT](https://dlthub.com/blog/dlt-dagster). The idea is to add a tool focused on the ingestion process, delegating the responsibility of checking contracts and automatically handling changes.
-* Improve model schema definitions and evolutions using [DBT](https://docs.dagster.io/integrations/libraries/dbt)to better handle schema changes and data lineage. Dagster's design already supports this by naming assets after the data they materialize, but incorporating a tool specifically for schema management will further enhance the pipeline.
-* Logging and monitoring using tools like [Metaplane](https://www.metaplane.dev/) or [ATLAN](https://atlan.com/) to simplify access to data quality insights and downstream impact analysis.
