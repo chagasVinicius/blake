@@ -1,6 +1,13 @@
 import requests
 
-from dagster import AssetExecutionContext, asset, Output, EnvVar
+from dagster import (
+    AssetExecutionContext,
+    asset,
+    Output,
+    asset_check,
+    AssetCheckResult,
+    AssetCheckExecutionContext,
+)
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from pyspark.sql import functions as F
 from dagster._utils.backoff import backoff
@@ -44,7 +51,56 @@ def HelloWorld() -> None:
     print("Hello World")
 
 
-@asset(required_resource_keys={"spark"})
+@asset(tags={"domain": "data", "pii": "false"})
+def breweries_api_health(context: AssetExecutionContext) -> Output:
+    api_url = f"{BREWERIES_URL}/breweries"
+
+    try:
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        current_date = datetime.now().strftime("%Y%m%d")
+        return Output(
+            value="Breweries API healthly",
+            metadata={"check_date": f"{current_date}"},
+        )
+
+    except Exception as e:
+        context.log.error(f"API check failed: {str(e)}")
+        raise e
+
+
+@asset_check(asset=breweries_api_health, blocking=True)
+def check_breweries_contract(context: AssetCheckExecutionContext):
+    contract_keys = set(
+        [
+            "id",
+            "name",
+            "brewery_type",
+            "address_1",
+            "address_2",
+            "address_3",
+            "city",
+            "state_province",
+            "postal_code",
+            "country",
+            "longitude",
+            "latitude",
+            "phone",
+            "website_url",
+            "state",
+            "street",
+        ]
+    )
+    api_url = f"{BREWERIES_URL}/breweries"
+    response = requests.get(api_url, timeout=10)
+    data = response.json()
+    api_contract_keys = data[0].keys()
+    return AssetCheckResult(
+        passed=bool(contract_keys.issubset(set(api_contract_keys))),
+    )
+
+
+@asset(required_resource_keys={"spark"}, tags={"domain": "data", "pii": "false"})
 def breweries_metadata(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
     try:
@@ -102,6 +158,7 @@ def fetch_page_from_api(page: int, per_page: int):
 @asset(
     deps=["breweries_api_health", "breweries_metadata"],
     required_resource_keys={"spark"},
+    tags={"domain": "data", "pii": "false"},
 )
 def breweries_api(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
@@ -145,13 +202,14 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     )
 
 
-columns_to_normalize = ["city", "state_province", "country"]
-
-
-@asset(deps=["breweries_api"], required_resource_keys={"spark"})
+@asset(
+    deps=["breweries_api"],
+    required_resource_keys={"spark"},
+    tags={"domain": "data", "pii": "false"},
+)
 def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> Output:
+    columns_to_normalize = ["city", "state", "country"]
     spark = context.resources.spark.spark_session
-
     raw_df = spark.read.json(f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/api/")
     unidecoded_df = raw_df.select(
         [
@@ -181,7 +239,7 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
 
     # Write as Parquet partitioned by specified columns
     transformed_df.write.mode("overwrite").partitionBy(
-        "country", "state_province", "city"
+        "country", "state", "city"
     ).parquet(f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/")
     current_timestamp_value = transformed_df.select("current_timestamp").collect()[0][0]
     return Output(
@@ -192,24 +250,10 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
     )
 
 
-@asset
-def breweries_api_health(context: AssetExecutionContext) -> Output:
-    api_url = f"{BREWERIES_URL}/breweries"
-
-    try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        current_date = datetime.now().strftime("%Y%m%d")
-        return Output(
-            value="Breweries API healthly",
-            metadata={"check_date": f"{current_date}"},
-        )
-    except Exception as e:
-        context.log.error(f"API check failed: {str(e)}")
-        return Output(value="Failed")
-
-
-@asset(deps=["breweries_partioned_by_location_parquet"])
+@asset(
+    deps=["breweries_partioned_by_location_parquet"],
+    tags={"domain": "sales", "pii": "false"},
+)
 def breweries_by_type_location() -> None:
     query = f"""
         INSTALL httpfs;
@@ -236,7 +280,4 @@ def breweries_by_type_location() -> None:
         },
         max_retries=10,
     )
-    print(query, "<<<<<<<<QUERY>>>>>>>>>>>")
     result = conn.execute(query).fetch_df()
-    print("RESULT")
-    print(result)
