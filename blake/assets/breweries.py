@@ -1,12 +1,21 @@
 import requests
-
-from dagster import AssetExecutionContext, asset, Output, EnvVar
+import asyncio
+import aiohttp
+from dagster import (
+    AssetExecutionContext,
+    asset,
+    Output,
+    asset_check,
+    AssetCheckResult,
+    AssetCheckExecutionContext,
+)
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from pyspark.sql import functions as F
 from dagster._utils.backoff import backoff
 import duckdb
 from datetime import datetime
 import os
+from typing import List, Dict
 
 BREWERIES_URL = os.getenv("BREWERIES_URL")
 DAGSTER_PIPES_BUCKET = os.getenv("DAGSTER_PIPES_BUCKET")
@@ -44,7 +53,56 @@ def HelloWorld() -> None:
     print("Hello World")
 
 
-@asset(required_resource_keys={"spark"})
+@asset(tags={"domain": "data", "pii": "false"})
+def breweries_api_health(context: AssetExecutionContext) -> Output:
+    api_url = f"{BREWERIES_URL}/breweries"
+
+    try:
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        current_date = datetime.now().strftime("%Y%m%d")
+        return Output(
+            value="Breweries API healthly",
+            metadata={"check_date": f"{current_date}"},
+        )
+
+    except Exception as e:
+        context.log.error(f"API check failed: {str(e)}")
+        raise e
+
+
+@asset_check(asset=breweries_api_health, blocking=True)
+def check_breweries_contract(context: AssetCheckExecutionContext):
+    contract_keys = set(
+        [
+            "id",
+            "name",
+            "brewery_type",
+            "address_1",
+            "address_2",
+            "address_3",
+            "city",
+            "state_province",
+            "postal_code",
+            "country",
+            "longitude",
+            "latitude",
+            "phone",
+            "website_url",
+            "state",
+            "street",
+        ]
+    )
+    api_url = f"{BREWERIES_URL}/breweries"
+    response = requests.get(api_url, timeout=10)
+    data = response.json()
+    api_contract_keys = data[0].keys()
+    return AssetCheckResult(
+        passed=bool(contract_keys.issubset(set(api_contract_keys))),
+    )
+
+
+@asset(required_resource_keys={"spark"}, tags={"domain": "data", "pii": "false"})
 def breweries_metadata(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
     try:
@@ -88,24 +146,26 @@ def breweries_metadata(context: AssetExecutionContext) -> Output:
     )
 
 
-def fetch_page_from_api(page: int, per_page: int):
+async def fetch_page_from_api_async(
+    session: aiohttp.ClientSession, page: int, per_page: int
+) -> List[Dict]:
     try:
         url = f"{BREWERIES_URL}/breweries"
         params = {"page": page, "per_page": per_page}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()  # Raise exception for 4xx/5xx
-        return response.json()
-    except requests.exceptions.RequestException as e:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+    except Exception as e:
         raise RuntimeError(f"API request failed for page {page}: {str(e)}") from e
 
 
 @asset(
     deps=["breweries_api_health", "breweries_metadata"],
     required_resource_keys={"spark"},
+    tags={"domain": "data", "pii": "false"},
 )
 def breweries_api(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
-
     # Read pagination metadata
     metadata_df = spark.read.json(
         f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/metadata/"
@@ -115,15 +175,24 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     per_page = int(metadata_row["per_page"])
     total_pages = (total_records + per_page - 1) // per_page  # Ceiling division
 
-    all_data = []
-    for page in range(1, total_pages + 1):
-        context.log.info(f"Fetching page {page}/{total_pages}")
-        try:
-            page_data = fetch_page_from_api(page, per_page)
-            all_data.extend(page_data)
-        except RuntimeError as e:
-            context.log.error(f"Failed to fetch page {page}: {str(e)}")
-            raise
+    # Async function to fetch all pages
+    async def fetch_all_pages():
+        async with aiohttp.ClientSession() as session:
+            tasks = [
+                fetch_page_from_api_async(session, page, per_page)
+                for page in range(1, total_pages + 1)
+            ]
+            return await asyncio.gather(*tasks)
+
+    # Run async code in event loop
+    try:
+        all_pages_data = asyncio.run(fetch_all_pages())
+
+        # Flatten the list of pages
+        all_data = [item for page_data in all_pages_data for item in page_data]
+    except Exception as e:
+        context.log.error(f"Async API fetching failed: {str(e)}")
+        raise
 
     # Create DataFrame with schema validation
     data_df = spark.createDataFrame(all_data, schema=json_schema)
@@ -145,14 +214,31 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     )
 
 
-columns_to_normalize = ["city", "state_province", "country"]
-
-
-@asset(deps=["breweries_api"], required_resource_keys={"spark"})
+@asset(
+    deps=["breweries_api"],
+    required_resource_keys={"spark"},
+    tags={"domain": "data", "pii": "false"},
+)
 def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> Output:
+    # Define edge case transformations as a dictionary for better maintainability
+    edge_case_transformations = {
+        "state": {"k�rnten": "karnten", "nieder�sterreich": "niederosterreich"},
+        "city": {"klagenfurt-am-w�rthersee": "klagenfurt-am-worthersee"},
+        "name": {
+            "Anheuser-Busch Inc ̢���� Williamsburg": "Anheuser-Busch/Inbev Williamsburg Brewery",
+            "Caf� Okei": "Cafe Okei",
+            "Wimitzbr�u": "Wimitzbrau",
+            "â": "-",
+        },
+    }
+
+    columns_to_normalize = ["city", "state", "country", "name"]
     spark = context.resources.spark.spark_session
 
+    # Read raw data
     raw_df = spark.read.json(f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/api/")
+
+    # Unidecode and normalize columns
     unidecoded_df = raw_df.select(
         [
             F.when(
@@ -175,15 +261,26 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
         ]
     )
 
-    # Add transformation current_timestamp
+    # Apply edge case transformations
+    transformed_df = unidecoded_df
+    for column, replacements in edge_case_transformations.items():
+        for original, replacement in replacements.items():
+            transformed_df = transformed_df.withColumn(
+                column,
+                F.regexp_replace(F.col(column), F.lit(original), F.lit(replacement)),
+            )
+
+    # Add transformation timestamp
     timestamp = F.current_timestamp()
-    transformed_df = unidecoded_df.withColumn("transformed_at", timestamp)
+    final_df = transformed_df.withColumn("transformed_at", timestamp)
 
     # Write as Parquet partitioned by specified columns
-    transformed_df.write.mode("overwrite").partitionBy(
-        "country", "state_province", "city"
-    ).parquet(f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/")
-    current_timestamp_value = transformed_df.select("current_timestamp").collect()[0][0]
+    final_df.write.mode("overwrite").partitionBy("country", "state", "city").parquet(
+        f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/"
+    )
+
+    # Collect and return metadata
+    current_timestamp_value = final_df.select("transformed_at").collect()[0][0]
     return Output(
         value="Breweries API partitioned successfully",
         metadata={
@@ -192,24 +289,10 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
     )
 
 
-@asset
-def breweries_api_health(context: AssetExecutionContext) -> Output:
-    api_url = f"{BREWERIES_URL}/breweries"
-
-    try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        current_date = datetime.now().strftime("%Y%m%d")
-        return Output(
-            value="Breweries API healthly",
-            metadata={"check_date": f"{current_date}"},
-        )
-    except Exception as e:
-        context.log.error(f"API check failed: {str(e)}")
-        return Output(value="Failed")
-
-
-@asset(deps=["breweries_partioned_by_location_parquet"])
+@asset(
+    deps=["breweries_partioned_by_location_parquet"],
+    tags={"domain": "sales", "pii": "false"},
+)
 def breweries_by_type_location() -> None:
     query = f"""
         INSTALL httpfs;
@@ -236,7 +319,4 @@ def breweries_by_type_location() -> None:
         },
         max_retries=10,
     )
-    print(query, "<<<<<<<<QUERY>>>>>>>>>>>")
     result = conn.execute(query).fetch_df()
-    print("RESULT")
-    print(result)

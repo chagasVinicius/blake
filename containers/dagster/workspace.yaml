@@ -3,4 +3,4 @@ load_from:
   - grpc_server:
       host: dagster_blake_user_code
       port: 4000
-      location_name: "example_user_code"
+      location_name: "blake_code"
