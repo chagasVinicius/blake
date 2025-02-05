@@ -34,15 +34,11 @@ These steps ensure partition consistency and reduce the need for analysts to cro
 
 #### Gold Layer
 
-This layer delivers curated, insight-ready data. Analysts can explore silver-layer data directly, leveraging pre-processed transformations to generate actionable insights without redundant work. For example, the project aggregates breweries by type per macro geographic level (country, state, city), enabling immediate analysis. Additionally, users can explore further insights via the integrated Jupyter service, which provides access to both silver and raw layers.
-
-By structuring data into these layers, the Blake Project streamlines analysis while maintaining traceability from raw sources to refined outputs.
+This layer delivers curated, insight-ready data. Analysts can explore silver-layer data directly, leveraging pre-processed transformations to generate actionable insights without redundant work. For example, the project aggregates breweries by type per macro geographic level (country, state, city), enabling immediate analysis.
 
 #### Blake design
 
 !["Project Diagram"](/images/blake-arch.png)
-
-The project architecture was designed to achieve the goals described above with consistency and reliability. The layers must be generated in a specific order and updated periodically. To accomplish this, the project leverages the Dagster orchestration platform.
 
 #### Dagster Orchestration
 

@@ -208,9 +208,25 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     tags={"domain": "data", "pii": "false"},
 )
 def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> Output:
-    columns_to_normalize = ["city", "state", "country"]
+    # Define edge case transformations as a dictionary for better maintainability
+    edge_case_transformations = {
+        "state": {"k�rnten": "karnten", "nieder�sterreich": "niederosterreich"},
+        "city": {"klagenfurt-am-w�rthersee": "klagenfurt-am-worthersee"},
+        "name": {
+            "Anheuser-Busch Inc ̢���� Williamsburg": "Anheuser-Busch/Inbev Williamsburg Brewery",
+            "Caf� Okei": "Cafe Okei",
+            "Wimitzbr�u": "Wimitzbrau",
+            "â": "-",
+        },
+    }
+
+    columns_to_normalize = ["city", "state", "country", "name"]
     spark = context.resources.spark.spark_session
+
+    # Read raw data
     raw_df = spark.read.json(f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/api/")
+
+    # Unidecode and normalize columns
     unidecoded_df = raw_df.select(
         [
             F.when(
@@ -233,15 +249,26 @@ def breweries_partioned_by_location_parquet(context: AssetExecutionContext) -> O
         ]
     )
 
-    # Add transformation current_timestamp
+    # Apply edge case transformations
+    transformed_df = unidecoded_df
+    for column, replacements in edge_case_transformations.items():
+        for original, replacement in replacements.items():
+            transformed_df = transformed_df.withColumn(
+                column,
+                F.regexp_replace(F.col(column), F.lit(original), F.lit(replacement)),
+            )
+
+    # Add transformation timestamp
     timestamp = F.current_timestamp()
-    transformed_df = unidecoded_df.withColumn("transformed_at", timestamp)
+    final_df = transformed_df.withColumn("transformed_at", timestamp)
 
     # Write as Parquet partitioned by specified columns
-    transformed_df.write.mode("overwrite").partitionBy(
-        "country", "state", "city"
-    ).parquet(f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/")
-    current_timestamp_value = transformed_df.select("current_timestamp").collect()[0][0]
+    final_df.write.mode("overwrite").partitionBy("country", "state", "city").parquet(
+        f"s3a://{DAGSTER_PIPES_BUCKET}/silver/breweries/"
+    )
+
+    # Collect and return metadata
+    current_timestamp_value = final_df.select("transformed_at").collect()[0][0]
     return Output(
         value="Breweries API partitioned successfully",
         metadata={
