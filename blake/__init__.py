@@ -4,7 +4,7 @@ from .jobs import breweries_api_health_job, breweries_main_job, breweries_golden
 from .sensors import (
     check_breweries_main_job,
     check_breweries_health,
-    check_breweries_silver,
+    run_breweries_golden_sensor,
     run_breweries_main_sensor,
 )
 from .resources.breweries import PySparkResource
@@ -28,7 +28,7 @@ defs = dg.Definitions(
         check_breweries_main_job,
         check_breweries_health,
         run_breweries_main_sensor,
-        check_breweries_silver,
+        run_breweries_golden_sensor,
     ],
     resources={"spark": PySparkResource()},
     schedules=[breweries_api_health_schedule],

@@ -1,5 +1,6 @@
 import requests
-
+import asyncio
+import aiohttp
 from dagster import (
     AssetExecutionContext,
     asset,
@@ -14,6 +15,7 @@ from dagster._utils.backoff import backoff
 import duckdb
 from datetime import datetime
 import os
+from typing import List, Dict
 
 BREWERIES_URL = os.getenv("BREWERIES_URL")
 DAGSTER_PIPES_BUCKET = os.getenv("DAGSTER_PIPES_BUCKET")
@@ -144,14 +146,16 @@ def breweries_metadata(context: AssetExecutionContext) -> Output:
     )
 
 
-def fetch_page_from_api(page: int, per_page: int):
+async def fetch_page_from_api_async(
+    session: aiohttp.ClientSession, page: int, per_page: int
+) -> List[Dict]:
     try:
         url = f"{BREWERIES_URL}/breweries"
         params = {"page": page, "per_page": per_page}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()  # Raise exception for 4xx/5xx
-        return response.json()
-    except requests.exceptions.RequestException as e:
+        async with session.get(url, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+    except Exception as e:
         raise RuntimeError(f"API request failed for page {page}: {str(e)}") from e
 
 
@@ -162,7 +166,6 @@ def fetch_page_from_api(page: int, per_page: int):
 )
 def breweries_api(context: AssetExecutionContext) -> Output:
     spark = context.resources.spark.spark_session
-
     # Read pagination metadata
     metadata_df = spark.read.json(
         f"s3a://{DAGSTER_PIPES_BUCKET}/raw/breweries/metadata/"
@@ -172,15 +175,24 @@ def breweries_api(context: AssetExecutionContext) -> Output:
     per_page = int(metadata_row["per_page"])
     total_pages = (total_records + per_page - 1) // per_page  # Ceiling division
 
-    all_data = []
-    for page in range(1, total_pages + 1):
-        context.log.info(f"Fetching page {page}/{total_pages}")
-        try:
-            page_data = fetch_page_from_api(page, per_page)
-            all_data.extend(page_data)
-        except RuntimeError as e:
-            context.log.error(f"Failed to fetch page {page}: {str(e)}")
-            raise
+    # Async function to fetch all pages
+    async def fetch_all_pages():
+        async with aiohttp.ClientSession() as session:
+            tasks = [
+                fetch_page_from_api_async(session, page, per_page)
+                for page in range(1, total_pages + 1)
+            ]
+            return await asyncio.gather(*tasks)
+
+    # Run async code in event loop
+    try:
+        all_pages_data = asyncio.run(fetch_all_pages())
+
+        # Flatten the list of pages
+        all_data = [item for page_data in all_pages_data for item in page_data]
+    except Exception as e:
+        context.log.error(f"Async API fetching failed: {str(e)}")
+        raise
 
     # Create DataFrame with schema validation
     data_df = spark.createDataFrame(all_data, schema=json_schema)

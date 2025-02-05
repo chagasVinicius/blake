@@ -28,7 +28,7 @@ def run_breweries_main_sensor(context: dg.SensorEvaluationContext):
     asset_key=dg.AssetKey("breweries_partioned_by_location_parquet"),
     job_name="breweries_golden_job",
 )
-def check_breweries_silver():
+def run_breweries_golden_sensor():
     return dg.RunRequest()
 
 
