@@ -99,7 +99,7 @@ The project can evolve into a more robust design with the addition of several fe
 
 #### RUN
 
-In order to run the project, make sure that you have docker, docker compose and make installed.
+In order to run the project, make sure that you have docker, docker compose and [make](https://www.gnu.org/software/make/) installed.
 
 The project contains a Makefile with two commands `up` and `down`, after cloning the repository, in the project directory run:
 
@@ -110,7 +110,7 @@ make up
 With that, all containers will run. In order to trigger all the pipelines, go to:
 <http://localhost:3000/> > Automation > check all automations > Actions > start.
 
-Done, now the Dagster orchestrator will start the pipelines with their respective checks and sensors.
+Done, now the Dagster orchestrator will start the pipelines with their respective checks and sensors. In order to replicate locally a possible production situation, the schedule is set to start in 5 minutes interval.
 
 The project contains two ways to make analytic analyses.
 In <http://localhost:8888>, you w:will find a jupyter notebook application, with a example notebook with how it is possible to access the storage using DuckDB.
